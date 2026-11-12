@@ -156,10 +156,11 @@ class PiCamera:
                 "Picamera2 is unavailable. Install it on Raspberry Pi OS."
             ) from exc
 
-        self.camera = Picamera2(fps=CAMERA_FPS)
+        self.camera = Picamera2()
 
         config = self.camera.create_video_configuration(
-            main={"size": (FRAME_WIDTH, FRAME_HEIGHT), "format": "RGB888"}
+            main={"size": (FRAME_WIDTH, FRAME_HEIGHT), "format": "RGB888"},
+            controls={"FrameRate": CAMERA_FPS},
         )
 
         self.camera.configure(config)
