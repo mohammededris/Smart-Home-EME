@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 Smart Home AI Surveillance Pipeline
@@ -39,16 +38,13 @@ import queue
 import signal
 import threading
 import time
-
 from collections import deque
 from datetime import datetime, timezone
 
 import cv2
 import requests
-
 from flask import Flask, Response, request
 from ultralytics import YOLO
-
 
 # ============================================================
 # CONFIGURATION
@@ -113,9 +109,7 @@ class FrameStore:
     def get(self, previous=None):
         with self.condition:
             self.condition.wait_for(
-                lambda: self.jpeg is not None
-                and self.jpeg is not previous,
-                timeout=5
+                lambda: self.jpeg is not None and self.jpeg is not previous, timeout=5
             )
             return self.jpeg
 
@@ -127,6 +121,7 @@ frame_store = FrameStore()
 # CAMERA ABSTRACTION
 # ============================================================
 
+
 class PCCamera:
     """Laptop webcam using OpenCV."""
 
@@ -134,9 +129,7 @@ class PCCamera:
         self.cap = cv2.VideoCapture(index)
 
         if not self.cap.isOpened():
-            raise RuntimeError(
-                f"Cannot open PC camera index {index}"
-            )
+            raise RuntimeError(f"Cannot open PC camera index {index}")
 
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
@@ -165,10 +158,7 @@ class PiCamera:
         self.camera = Picamera2()
 
         config = self.camera.create_video_configuration(
-            main={
-                "size": (FRAME_WIDTH, FRAME_HEIGHT),
-                "format": "RGB888"
-            }
+            main={"size": (FRAME_WIDTH, FRAME_HEIGHT), "format": "RGB888"}
         )
 
         self.camera.configure(config)
@@ -178,9 +168,7 @@ class PiCamera:
         try:
             from libcamera import controls
 
-            self.camera.set_controls({
-                "AfMode": controls.AfModeEnum.Continuous
-            })
+            self.camera.set_controls({"AfMode": controls.AfModeEnum.Continuous})
         except Exception:
             pass
 
@@ -212,43 +200,30 @@ def create_camera(args):
 # JSON EVENT GENERATION
 # ============================================================
 
+
 def timestamp_utc():
-    return datetime.now(timezone.utc).isoformat().replace(
-        "+00:00", "Z"
-    )
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def emit_event(
-    event_type,
-    track_id=None,
-    confidence=None,
-    object_class="person"
-):
+def emit_event(event_type, track_id=None, confidence=None, object_class="person"):
     """Print a structured event for the software backend."""
 
     event = {
         "event_type": event_type,
         "channel": CHANNEL_ID,
         "timestamp": timestamp_utc(),
-        "track_id": (
-            str(int(track_id)) if track_id is not None else None
-        ),
+        "track_id": (str(int(track_id)) if track_id is not None else None),
         "object_class": object_class,
-        "confidence": (
-            round(float(confidence), 2)
-            if confidence is not None else None
-        )
+        "confidence": (round(float(confidence), 2) if confidence is not None else None),
     }
 
-    print(
-        "[event] " + json.dumps(event),
-        flush=True
-    )
+    print("[event] " + json.dumps(event), flush=True)
 
 
 # ============================================================
 # BLYNK INTEGRATION
 # ============================================================
+
 
 class BlynkSender:
     """Asynchronous Blynk sender supporting multiple device tokens."""
@@ -260,14 +235,9 @@ class BlynkSender:
         self.thread = None
 
         if self.tokens:
-            self.thread = threading.Thread(
-                target=self.worker,
-                daemon=True
-            )
+            self.thread = threading.Thread(target=self.worker, daemon=True)
             self.thread.start()
-            print(
-                f"[blynk] Enabled for {len(self.tokens)} device(s)"
-            )
+            print(f"[blynk] Enabled for {len(self.tokens)} device(s)")
         else:
             print("[blynk] Disabled: no device tokens configured")
 
@@ -299,18 +269,12 @@ class BlynkSender:
                     try:
                         response = requests.get(
                             f"https://{BLYNK_SERVER}/external/api/update",
-                            params={
-                                "token": token,
-                                BLYNK_PIN: value
-                            },
-                            timeout=5
+                            params={"token": token, BLYNK_PIN: value},
+                            timeout=5,
                         )
 
                         if response.status_code == 200:
-                            print(
-                                f"[blynk] {BLYNK_PIN}={value} OK",
-                                flush=True
-                            )
+                            print(f"[blynk] {BLYNK_PIN}={value} OK", flush=True)
                             success = True
                             break
 
@@ -346,6 +310,7 @@ class BlynkSender:
 # FLASK MJPEG STREAM
 # ============================================================
 
+
 def create_flask_app():
     app = Flask(__name__)
 
@@ -355,21 +320,15 @@ def create_flask_app():
 
         valid = (
             auth is not None
-            and hmac.compare_digest(
-                auth.username or "", STREAM_USERNAME
-            )
-            and hmac.compare_digest(
-                auth.password or "", STREAM_PASSWORD
-            )
+            and hmac.compare_digest(auth.username or "", STREAM_USERNAME)
+            and hmac.compare_digest(auth.password or "", STREAM_PASSWORD)
         )
 
         if not valid:
             return Response(
                 "Authentication required",
                 401,
-                {
-                    "WWW-Authenticate": 'Basic realm="Smart Home Camera"'
-                }
+                {"WWW-Authenticate": 'Basic realm="Smart Home Camera"'},
             )
 
     @app.route("/")
@@ -413,16 +372,10 @@ def create_flask_app():
 
                 previous = jpeg
 
-                yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n\r\n"
-                    + jpeg
-                    + b"\r\n"
-                )
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n")
 
         return Response(
-            generate(),
-            mimetype="multipart/x-mixed-replace; boundary=frame"
+            generate(), mimetype="multipart/x-mixed-replace; boundary=frame"
         )
 
     return app
@@ -431,17 +384,13 @@ def create_flask_app():
 def run_stream_server():
     app = create_flask_app()
 
-    app.run(
-        host="0.0.0.0",
-        port=STREAM_PORT,
-        threaded=True,
-        use_reloader=False
-    )
+    app.run(host="0.0.0.0", port=STREAM_PORT, threaded=True, use_reloader=False)
 
 
 # ============================================================
 # YOLO MODEL
 # ============================================================
+
 
 def load_model(model_name):
     print(f"[yolo] Loading {model_name}...", flush=True)
@@ -457,55 +406,43 @@ def load_model(model_name):
 # DETECTION PIPELINE
 # ============================================================
 
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Smart Home AI Surveillance"
-    )
+    parser = argparse.ArgumentParser(description="Smart Home AI Surveillance")
 
     parser.add_argument(
         "--camera",
         choices=["pc", "picam"],
         default="pc",
-        help="Camera source: pc or picam"
+        help="Camera source: pc or picam",
     )
 
     parser.add_argument(
-        "--camera-index",
-        type=int,
-        default=0,
-        help="OpenCV webcam index"
+        "--camera-index", type=int, default=0, help="OpenCV webcam index"
+    )
+
+    parser.add_argument("--model", default=MODEL_NAME, help="YOLO model file")
+
+    parser.add_argument(
+        "--no-motion-gate", action="store_true", help="Run YOLO on every frame"
     )
 
     parser.add_argument(
-        "--model",
-        default=MODEL_NAME,
-        help="YOLO model file"
+        "--enable-blynk", action="store_true", help="Enable Blynk notifications"
     )
 
     parser.add_argument(
-        "--no-motion-gate",
+        "--preview",
         action="store_true",
-        help="Run YOLO on every frame"
-    )
-
-    parser.add_argument(
-        "--enable-blynk",
-        action="store_true",
-        help="Enable Blynk notifications"
+        help="Show a local OpenCV preview window (requires a display)",
     )
 
     args = parser.parse_args()
 
-    signal.signal(
-        signal.SIGINT,
-        lambda *_: stop_event.set()
-    )
+    signal.signal(signal.SIGINT, lambda *_: stop_event.set())
 
     if hasattr(signal, "SIGTERM"):
-        signal.signal(
-            signal.SIGTERM,
-            lambda *_: stop_event.set()
-        )
+        signal.signal(signal.SIGTERM, lambda *_: stop_event.set())
 
     # --------------------------------------------------------
     # Initialize components
@@ -522,10 +459,9 @@ def main():
     if args.enable_blynk:
         tokens = [
             token.strip()
-            for token in os.getenv(
-                "BLYNK_TOKENS",
-                os.getenv("BLYNK_TOKEN", "")
-            ).split(",")
+            for token in os.getenv("BLYNK_TOKENS", os.getenv("BLYNK_TOKEN", "")).split(
+                ","
+            )
             if token.strip()
         ]
 
@@ -534,29 +470,18 @@ def main():
 
     blynk = BlynkSender(tokens)
 
-    threading.Thread(
-        target=run_stream_server,
-        daemon=True
-    ).start()
+    threading.Thread(target=run_stream_server, daemon=True).start()
 
-    print(
-        f"[boot] Camera: {args.camera}",
-        flush=True
-    )
+    print(f"[boot] Camera: {args.camera}", flush=True)
 
-    print(
-        f"[boot] Stream: http://localhost:{STREAM_PORT}/",
-        flush=True
-    )
+    print(f"[boot] Stream: http://localhost:{STREAM_PORT}/", flush=True)
 
     # --------------------------------------------------------
     # State initialization
     # --------------------------------------------------------
 
     motion_detector = cv2.createBackgroundSubtractorMOG2(
-        history=500,
-        varThreshold=50,
-        detectShadows=False
+        history=500, varThreshold=50, detectShadows=False
     )
 
     hits = deque(maxlen=HIT_WINDOW)
@@ -581,7 +506,6 @@ def main():
 
     try:
         while not stop_event.is_set():
-
             success, frame = camera.read()
 
             if not success or frame is None:
@@ -607,7 +531,6 @@ def main():
             detection_count = 0
 
             if should_infer:
-
                 results = model.track(
                     frame,
                     classes=[0],
@@ -615,7 +538,7 @@ def main():
                     imgsz=IMGSZ,
                     tracker=TRACKER,
                     persist=True,
-                    verbose=False
+                    verbose=False,
                 )
 
                 result = results[0]
@@ -624,7 +547,6 @@ def main():
                 active_tracks = []
 
                 if result.boxes is not None:
-
                     boxes = result.boxes.xyxy.cpu().numpy()
                     confidences = result.boxes.conf.cpu().numpy()
 
@@ -633,10 +555,7 @@ def main():
                     else:
                         track_ids = [None] * len(boxes)
 
-                    for box, track_id, confidence in zip(
-                        boxes, track_ids, confidences
-                    ):
-
+                    for box, track_id, confidence in zip(boxes, track_ids, confidences):
                         x1, y1, x2, y2 = box
 
                         width = x2 - x1
@@ -648,9 +567,7 @@ def main():
 
                         detection_count += 1
 
-                        active_tracks.append(
-                            (box, track_id, confidence)
-                        )
+                        active_tracks.append((box, track_id, confidence))
 
                         # Generate an event once per new tracking ID.
                         if track_id is not None:
@@ -659,11 +576,7 @@ def main():
                             if track_id not in seen_track_ids:
                                 seen_track_ids.add(track_id)
 
-                                emit_event(
-                                    "detection",
-                                    track_id,
-                                    confidence
-                                )
+                                emit_event("detection", track_id, confidence)
 
                 # ------------------------------------------------
                 # Debounce person detection
@@ -675,7 +588,6 @@ def main():
                     last_seen = now
 
                 if not present and sum(hits) >= HITS_NEEDED:
-
                     present = True
                     blynk.send(1)
                     last_sent = now
@@ -685,7 +597,6 @@ def main():
                     emit_event("person_present")
 
                 elif present and now - last_seen > CLEAR_AFTER_SECONDS:
-
                     present = False
                     hits.clear()
 
@@ -701,7 +612,6 @@ def main():
             # ------------------------------------------------
 
             if present and now - last_sent >= KEEPALIVE_SECONDS:
-
                 blynk.send(1)
                 last_sent = now
 
@@ -712,21 +622,11 @@ def main():
             annotated = frame.copy()
 
             for box, track_id, confidence in active_tracks:
-
                 x1, y1, x2, y2 = map(int, box)
 
-                cv2.rectangle(
-                    annotated,
-                    (x1, y1),
-                    (x2, y2),
-                    (0, 255, 0),
-                    2
-                )
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-                label = (
-                    f"ID: {int(track_id)} "
-                    if track_id is not None else ""
-                )
+                label = f"ID: {int(track_id)} " if track_id is not None else ""
 
                 label += f"Person {confidence:.2f}"
 
@@ -737,7 +637,7 @@ def main():
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.5,
                     (0, 255, 0),
-                    2
+                    2,
                 )
 
             # ------------------------------------------------
@@ -748,22 +648,13 @@ def main():
 
             current_fps = 1.0 / elapsed
 
-            fps = (
-                0.9 * fps + 0.1 * current_fps
-                if fps else current_fps
-            )
+            fps = 0.9 * fps + 0.1 * current_fps if fps else current_fps
 
             previous_frame_time = now
 
-            status = (
-                "PERSON PRESENT"
-                if present else "NO PERSON"
-            )
+            status = "PERSON PRESENT" if present else "NO PERSON"
 
-            color = (
-                (0, 0, 255)
-                if present else (0, 200, 0)
-            )
+            color = (0, 0, 255) if present else (0, 200, 0)
 
             cv2.putText(
                 annotated,
@@ -772,18 +663,17 @@ def main():
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.65,
                 color,
-                2
+                2,
             )
 
             cv2.putText(
                 annotated,
-                f"Motion: {motion_level} | "
-                f"YOLO: {'ON' if should_infer else 'IDLE'}",
+                f"Motion: {motion_level} | YOLO: {'ON' if should_infer else 'IDLE'}",
                 (10, 55),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
                 (255, 255, 255),
-                1
+                1,
             )
 
             # ------------------------------------------------
@@ -791,22 +681,16 @@ def main():
             # ------------------------------------------------
 
             success, buffer = cv2.imencode(
-                ".jpg",
-                annotated,
-                [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
+                ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
             )
 
             if success:
                 frame_store.update(buffer.tobytes())
 
-            # Local preview
-            cv2.imshow(
-                "Smart Home AI Surveillance",
-                annotated
-            )
-
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
+            if args.preview:
+                cv2.imshow("Smart Home AI Surveillance", annotated)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
 
     except KeyboardInterrupt:
         print("\n[exit] Interrupted by user")
@@ -823,7 +707,8 @@ def main():
 
         camera.release()
 
-        cv2.destroyAllWindows()
+        if args.preview:
+            cv2.destroyAllWindows()
 
         print("[exit] Shutdown complete")
 
