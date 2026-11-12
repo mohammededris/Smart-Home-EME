@@ -16,6 +16,7 @@ Features:
     - JSON event generation
     - Blynk V20 updates to multiple devices
     - Blynk keep-alive
+    - Async inference worker (MJPEG stream is never blocked by YOLO)
     - Authenticated Flask MJPEG live stream
 
 Install PC dependencies:
@@ -55,7 +56,7 @@ MODEL_NAME = "yolo11n.pt"
 # Camera
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
-CAMERA_FPS = 30
+CAMERA_FPS = 15
 
 # YOLO
 IMGSZ = 320
@@ -158,7 +159,11 @@ class PiCamera:
         self.camera = Picamera2()
 
         config = self.camera.create_video_configuration(
-            main={"size": (FRAME_WIDTH, FRAME_HEIGHT), "format": "RGB888"}
+            main={
+                "size": (FRAME_WIDTH, FRAME_HEIGHT),
+                "format": "RGB888",
+                "fps": CAMERA_FPS,
+            }
         )
 
         self.camera.configure(config)
@@ -492,13 +497,85 @@ def main():
     last_inference = 0.0
 
     active_tracks = []
-    seen_track_ids = set()
 
     fps = 0.0
+    infer_fps = 0.0
+    previous_result_time = 0.0
     previous_frame_time = time.time()
 
     blynk.send(0)
     last_sent = time.time()
+
+    # Inference runs in a worker thread so the video loop and the
+    # MJPEG stream are never blocked by YOLO.
+    infer_queue = queue.Queue(maxsize=1)
+    result_q = queue.Queue()
+
+    def submit_infer(frame):
+        # Keep only the freshest pending frame.
+        try:
+            infer_queue.get_nowait()
+        except queue.Empty:
+            pass
+        infer_queue.put_nowait(frame.copy())
+
+    def inference_worker():
+        seen_ids = set()
+
+        while not stop_event.is_set():
+            try:
+                worker_frame = infer_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            try:
+                results = model.track(
+                    worker_frame,
+                    classes=[0],
+                    conf=CONFIDENCE,
+                    imgsz=IMGSZ,
+                    tracker=TRACKER,
+                    persist=True,
+                    verbose=False,
+                )
+                result = results[0]
+                tracks = []
+                count = 0
+
+                if result.boxes is not None:
+                    boxes = result.boxes.xyxy.cpu().numpy()
+                    confidences = result.boxes.conf.cpu().numpy()
+                    track_ids = (
+                        result.boxes.id.cpu().numpy()
+                        if result.boxes.id is not None
+                        else [None] * len(boxes)
+                    )
+
+                    for box, track_id, confidence in zip(boxes, track_ids, confidences):
+                        x1, y1, x2, y2 = box
+
+                        width = x2 - x1
+                        height = y2 - y1
+
+                        if width < MIN_BOX_SIZE or height < MIN_BOX_SIZE:
+                            continue
+
+                        count += 1
+                        tracks.append((box, track_id, confidence))
+
+                        # Generate an event once per new tracking ID.
+                        if track_id is not None:
+                            track_id = int(track_id)
+
+                            if track_id not in seen_ids:
+                                seen_ids.add(track_id)
+                                emit_event("detection", track_id, confidence)
+
+                result_q.put_nowait((tracks, count))
+            except Exception as exc:
+                print(f"[infer] {exc}", flush=True)
+
+    threading.Thread(target=inference_worker, daemon=True).start()
 
     # --------------------------------------------------------
     # Main loop
@@ -521,87 +598,62 @@ def main():
             motion_level = cv2.countNonZero(motion_mask)
 
             # Run YOLO if motion exists, or periodically
-            # even when there is no motion.
+            # even when there is no motion. Inference itself happens
+            # in the worker thread; this only decides when to feed it.
             should_infer = (
                 args.no_motion_gate
                 or motion_level > MOTION_THRESHOLD
                 or now - last_inference >= IDLE_INFERENCE_INTERVAL
             )
 
-            detection_count = 0
-
             if should_infer:
-                results = model.track(
-                    frame,
-                    classes=[0],
-                    conf=CONFIDENCE,
-                    imgsz=IMGSZ,
-                    tracker=TRACKER,
-                    persist=True,
-                    verbose=False,
-                )
+                submit_infer(frame)
 
-                result = results[0]
+            # ------------------------------------------------
+            # Drain finished inferences (worker thread)
+            # ------------------------------------------------
 
-                last_inference = now
-                active_tracks = []
+            while True:
+                try:
+                    new_tracks, detection_count = result_q.get_nowait()
+                except queue.Empty:
+                    break
 
-                if result.boxes is not None:
-                    boxes = result.boxes.xyxy.cpu().numpy()
-                    confidences = result.boxes.conf.cpu().numpy()
+                active_tracks = new_tracks
+                result_time = time.time()
+                last_inference = result_time
 
-                    if result.boxes.id is not None:
-                        track_ids = result.boxes.id.cpu().numpy()
-                    else:
-                        track_ids = [None] * len(boxes)
-
-                    for box, track_id, confidence in zip(boxes, track_ids, confidences):
-                        x1, y1, x2, y2 = box
-
-                        width = x2 - x1
-                        height = y2 - y1
-
-                        # Ignore very small detections.
-                        if width < MIN_BOX_SIZE or height < MIN_BOX_SIZE:
-                            continue
-
-                        detection_count += 1
-
-                        active_tracks.append((box, track_id, confidence))
-
-                        # Generate an event once per new tracking ID.
-                        if track_id is not None:
-                            track_id = int(track_id)
-
-                            if track_id not in seen_track_ids:
-                                seen_track_ids.add(track_id)
-
-                                emit_event("detection", track_id, confidence)
-
-                # ------------------------------------------------
-                # Debounce person detection
-                # ------------------------------------------------
+                if previous_result_time:
+                    current_infer_fps = 1.0 / max(
+                        result_time - previous_result_time, 0.001
+                    )
+                    infer_fps = (
+                        0.9 * infer_fps + 0.1 * current_infer_fps
+                        if infer_fps
+                        else current_infer_fps
+                    )
+                previous_result_time = result_time
 
                 hits.append(detection_count > 0)
 
                 if detection_count > 0:
-                    last_seen = now
+                    last_seen = result_time
 
                 if not present and sum(hits) >= HITS_NEEDED:
                     present = True
                     blynk.send(1)
-                    last_sent = now
+                    last_sent = result_time
 
                     print("[detect] PERSON PRESENT", flush=True)
 
                     emit_event("person_present")
 
-                elif present and now - last_seen > CLEAR_AFTER_SECONDS:
+                elif present and result_time - last_seen > CLEAR_AFTER_SECONDS:
                     present = False
                     hits.clear()
 
                     blynk.send(0)
-                    last_sent = now
+                    last_sent = result_time
 
                     print("[detect] PERSON GONE", flush=True)
 
@@ -666,9 +718,14 @@ def main():
                 2,
             )
 
+            yolo_status = "ON" if should_infer else "IDLE"
+
+            if infer_fps:
+                yolo_status += f" ({infer_fps:.1f}/s)"
+
             cv2.putText(
                 annotated,
-                f"Motion: {motion_level} | YOLO: {'ON' if should_infer else 'IDLE'}",
+                f"Motion: {motion_level} | YOLO: {yolo_status}",
                 (10, 55),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
